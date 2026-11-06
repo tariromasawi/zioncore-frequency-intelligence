@@ -13,11 +13,11 @@ export default function Home() {
         </div>
 
         <p className="text-violet-400/80 leading-relaxed">
-          Bidirectional frequency intelligence system built under the authority of
+          Bidirectional frequency intelligence under the authority of
           <br />
           <span className="text-violet-200 font-medium">HRH Saint Tariro Masawi, The Anointed Commander</span>.
           <br />
-          Scientific receiver · decoder · interpreter · transmitter.
+          Local-first · Supabase-ready · Stripe billing · no Firebase lock-in.
         </p>
 
         <div className="flex flex-col sm:flex-row gap-4 justify-center">
@@ -26,6 +26,12 @@ export default function Home() {
             className="px-8 py-3.5 rounded-2xl bg-gradient-to-r from-violet-600 to-fuchsia-600 hover:from-violet-500 hover:to-fuchsia-500 font-semibold shadow-xl shadow-violet-900/40 transition"
           >
             Enter Frequency Lab
+          </Link>
+          <Link
+            href="/pricing"
+            className="px-8 py-3.5 rounded-2xl border border-amber-600/50 text-amber-100 hover:bg-amber-950/30 font-semibold transition"
+          >
+            Pricing · Stripe
           </Link>
         </div>
 
