@@ -1,11 +1,9 @@
 /**
- * ZionCore Frequency Engine
- * Bidirectional Frequency Intelligence — RECEIVE · DECODE
- * Authority: HRH Saint Tariro Masawi
- * MWARI NDI MWARI
+ * ZionCore Frequency Engine — dense RECEIVE · DECODE
+ * Authority: HRH Saint Tariro Masawi | MWARI NDI MWARI | 77-99-33
  */
 
-import type { SpectralPeak, FrequencyObservation, AnalysisMode } from "@/types/zioncore";
+import type { SpectralPeak, FrequencyObservation } from "@/types/zioncore";
 
 export class FrequencyEngine {
   private audioContext: AudioContext | null = null;
@@ -14,25 +12,30 @@ export class FrequencyEngine {
   private source: MediaStreamAudioSourceNode | null = null;
   private animationFrameId: number | null = null;
   private isRunning = false;
+  private baselineRms = 0;
+  private frameCount = 0;
 
   public sampleRate = 0;
   public fftSize = 4096;
   public frequencyData: Float32Array | null = null;
   public timeDomainData: Uint8Array | null = null;
 
-  private onUpdate: ((obs: Partial<FrequencyObservation>) => void) | null = null;
+  private onUpdate: ((obs: Partial<FrequencyObservation> & Record<string, unknown>) => void) | null = null;
 
   constructor(fftSize: number = 4096) {
     this.fftSize = fftSize;
   }
 
   async start(
-    onUpdate: (obs: Partial<FrequencyObservation>) => void,
-    constraints: MediaStreamConstraints = { audio: true }
+    onUpdate: (obs: Partial<FrequencyObservation> & Record<string, unknown>) => void,
+    constraints: MediaStreamConstraints = {
+      audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false },
+    }
   ): Promise<void> {
     if (this.isRunning) return;
-
     this.onUpdate = onUpdate;
+    this.frameCount = 0;
+    this.baselineRms = 0;
 
     try {
       this.mediaStream = await navigator.mediaDevices.getUserMedia(constraints);
@@ -41,16 +44,16 @@ export class FrequencyEngine {
 
       this.analyser = this.audioContext.createAnalyser();
       this.analyser.fftSize = this.fftSize;
-      this.analyser.smoothingTimeConstant = 0.8;
-      this.analyser.minDecibels = -90;
+      this.analyser.smoothingTimeConstant = 0.75;
+      this.analyser.minDecibels = -100;
       this.analyser.maxDecibels = -10;
 
       this.source = this.audioContext.createMediaStreamSource(this.mediaStream);
       this.source.connect(this.analyser);
 
-      const bufferLength = this.analyser.frequencyBinCount;
-      this.frequencyData = new Float32Array(bufferLength);
-      this.timeDomainData = new Uint8Array(bufferLength);
+      const n = this.analyser.frequencyBinCount;
+      this.frequencyData = new Float32Array(n);
+      this.timeDomainData = new Uint8Array(n);
 
       this.isRunning = true;
       this.tick();
@@ -70,18 +73,14 @@ export class FrequencyEngine {
   }
 
   private cleanup(): void {
-    if (this.source) {
-      this.source.disconnect();
-      this.source = null;
-    }
-    if (this.mediaStream) {
-      this.mediaStream.getTracks().forEach((t) => t.stop());
-      this.mediaStream = null;
-    }
+    this.source?.disconnect();
+    this.source = null;
+    this.mediaStream?.getTracks().forEach((t) => t.stop());
+    this.mediaStream = null;
     if (this.audioContext && this.audioContext.state !== "closed") {
       this.audioContext.close().catch(() => {});
-      this.audioContext = null;
     }
+    this.audioContext = null;
     this.analyser = null;
     this.frequencyData = null;
     this.timeDomainData = null;
@@ -89,86 +88,108 @@ export class FrequencyEngine {
 
   private tick = (): void => {
     if (!this.isRunning || !this.analyser || !this.frequencyData || !this.timeDomainData) return;
-
     this.analyser.getFloatFrequencyData(this.frequencyData as any);
     this.analyser.getByteTimeDomainData(this.timeDomainData as any);
-
-    const observation = this.computeObservation();
-    if (this.onUpdate) this.onUpdate(observation);
-
+    if (this.onUpdate) this.onUpdate(this.computeObservation());
     this.animationFrameId = requestAnimationFrame(this.tick);
   };
 
-  private computeObservation(): Partial<FrequencyObservation> {
-    if (!this.frequencyData || !this.analyser) return {};
+  private computeObservation(): Partial<FrequencyObservation> & Record<string, unknown> {
+    if (!this.frequencyData || !this.analyser || !this.timeDomainData) return {};
 
-    const binCount = this.analyser.frequencyBinCount;
-    const resolution = this.sampleRate / this.fftSize;
+    const n = this.analyser.frequencyBinCount;
+    const df = this.sampleRate / this.fftSize;
+    this.frameCount++;
+
+    let sumSq = 0;
+    let peak = 0;
+    for (let i = 0; i < this.timeDomainData.length; i++) {
+      const v = (this.timeDomainData[i] - 128) / 128;
+      sumSq += v * v;
+      const a = Math.abs(v);
+      if (a > peak) peak = a;
+    }
+    const rms = Math.sqrt(sumSq / this.timeDomainData.length);
+    const crest = peak > 1e-9 ? peak / (rms + 1e-12) : 0;
+
+    if (this.frameCount < 45 || rms < this.baselineRms * 1.15) {
+      this.baselineRms = this.baselineRms === 0 ? rms : this.baselineRms * 0.95 + rms * 0.05;
+    }
+    const snrDb =
+      this.baselineRms > 1e-8 ? 20 * Math.log10((rms + 1e-12) / (this.baselineRms + 1e-12)) : 0;
 
     let maxMag = -Infinity;
     let dominantBin = 0;
-    for (let i = 1; i < binCount; i++) {
-      if (this.frequencyData[i] > maxMag) {
-        maxMag = this.frequencyData[i];
+    let weightedSum = 0;
+    let magSum = 0;
+    const candidates: { bin: number; mag: number }[] = [];
+
+    for (let i = 1; i < n; i++) {
+      const mag = this.frequencyData[i];
+      const linear = Math.pow(10, mag / 20);
+      weightedSum += i * linear;
+      magSum += linear;
+      if (mag > maxMag) {
+        maxMag = mag;
         dominantBin = i;
       }
-    }
-    const dominantFrequencyHz = dominantBin * resolution;
-
-    const peaks: SpectralPeak[] = [];
-    const peakCandidates: { bin: number; mag: number }[] = [];
-    for (let i = 2; i < binCount - 2; i++) {
-      const mag = this.frequencyData[i];
-      if (
-        mag > this.frequencyData[i - 1] &&
-        mag > this.frequencyData[i + 1] &&
-        mag > -70
-      ) {
-        peakCandidates.push({ bin: i, mag });
+      if (i > 1 && i < n - 1 && mag > this.frequencyData[i - 1] && mag > this.frequencyData[i + 1] && mag > -75) {
+        candidates.push({ bin: i, mag });
       }
     }
-    peakCandidates
-      .sort((a, b) => b.mag - a.mag)
-      .slice(0, 8)
-      .forEach((p) => {
-        peaks.push({
-          frequencyHz: Math.round(p.bin * resolution * 100) / 100,
-          magnitudeDb: Math.round(p.mag * 100) / 100,
-          binIndex: p.bin,
-        });
-      });
 
-    let sumSquares = 0;
-    if (this.timeDomainData) {
-      for (let i = 0; i < this.timeDomainData.length; i++) {
-        const v = (this.timeDomainData[i] - 128) / 128;
-        sumSquares += v * v;
+    const dominantHz = dominantBin * df;
+    const centroidHz = magSum > 0 ? (weightedSum / magSum) * df : 0;
+
+    candidates.sort((a, b) => b.mag - a.mag);
+    const peaks: SpectralPeak[] = candidates.slice(0, 12).map((p) => ({
+      frequencyHz: Math.round(p.bin * df * 100) / 100,
+      magnitudeDb: Math.round(p.mag * 100) / 100,
+      binIndex: p.bin,
+    }));
+
+    const harmonics: number[] = [];
+    if (dominantHz > 40) {
+      for (let h = 2; h <= 5; h++) {
+        const target = dominantHz * h;
+        const hit = peaks.find((p) => Math.abs(p.frequencyHz - target) < df * 2.5);
+        if (hit) harmonics.push(Math.round(hit.frequencyHz * 10) / 10);
       }
     }
-    const rms = Math.sqrt(sumSquares / (this.timeDomainData?.length || 1));
 
     let signalQuality: FrequencyObservation["signalQuality"] = "NOISE";
-    if (rms > 0.15) signalQuality = "EXCELLENT";
-    else if (rms > 0.08) signalQuality = "GOOD";
-    else if (rms > 0.03) signalQuality = "FAIR";
-    else if (rms > 0.01) signalQuality = "POOR";
+    if (rms > 0.18 && snrDb > 12) signalQuality = "EXCELLENT";
+    else if (rms > 0.09 && snrDb > 6) signalQuality = "GOOD";
+    else if (rms > 0.035) signalQuality = "FAIR";
+    else if (rms > 0.012) signalQuality = "POOR";
 
     const anomalyIndicators: string[] = [];
-    if (dominantFrequencyHz > 18000) anomalyIndicators.push("HIGH_FREQUENCY_COMPONENT");
-    if (rms < 0.005) anomalyIndicators.push("NEAR_SILENCE");
-    if (peaks.length > 6) anomalyIndicators.push("RICH_HARMONIC_STRUCTURE");
+    if (dominantHz > 16000) anomalyIndicators.push("ULTRASONIC_EDGE");
+    if (rms < 0.004) anomalyIndicators.push("NEAR_SILENCE");
+    if (peaks.length >= 8) anomalyIndicators.push("RICH_HARMONIC_STRUCTURE");
+    if (harmonics.length >= 2) anomalyIndicators.push("HARMONIC_SERIES_DETECTED");
+    if (crest > 8) anomalyIndicators.push("HIGH_CREST_TRANSIENT");
+    if (snrDb > 18) anomalyIndicators.push("HIGH_SNR");
+    if (centroidHz > dominantHz * 2.2 && dominantHz > 80) anomalyIndicators.push("BRIGHT_SPECTRAL_TILT");
 
     return {
       sampleRate: this.sampleRate,
       fftSize: this.fftSize,
-      frequencyResolution: Math.round(resolution * 1000) / 1000,
-      dominantFrequencyHz: Math.round(dominantFrequencyHz * 100) / 100,
+      frequencyResolution: Math.round(df * 1000) / 1000,
+      dominantFrequencyHz: Math.round(dominantHz * 100) / 100,
       spectralPeaks: peaks,
-      rmsLevel: Math.round(rms * 10000) / 10000,
+      rmsLevel: Math.round(rms * 100000) / 100000,
       signalQuality,
       anomalyIndicators,
       sourceDeviceType: "browser-microphone",
       updatedAt: new Date().toISOString(),
+      spectralCentroidHz: Math.round(centroidHz * 10) / 10,
+      crestFactor: Math.round(crest * 100) / 100,
+      estimatedSnrDb: Math.round(snrDb * 10) / 10,
+      noiseFloorRms: Math.round(this.baselineRms * 100000) / 100000,
+      harmonicFrequenciesHz: harmonics,
+      peakCount: peaks.length,
+      frameIndex: this.frameCount,
     };
   }
 
@@ -181,14 +202,13 @@ export class FrequencyEngine {
   }
 
   setFftSize(size: number): void {
-    if ([2048, 4096, 8192].includes(size)) {
-      this.fftSize = size;
-      if (this.analyser) {
-        this.analyser.fftSize = size;
-        const bufferLength = this.analyser.frequencyBinCount;
-        this.frequencyData = new Float32Array(bufferLength);
-        this.timeDomainData = new Uint8Array(bufferLength);
-      }
+    if (![2048, 4096, 8192].includes(size)) return;
+    this.fftSize = size;
+    if (this.analyser) {
+      this.analyser.fftSize = size;
+      const n = this.analyser.frequencyBinCount;
+      this.frequencyData = new Float32Array(n);
+      this.timeDomainData = new Uint8Array(n);
     }
   }
 
