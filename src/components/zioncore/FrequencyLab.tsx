@@ -8,6 +8,7 @@ import { observationToJSON, observationToCSV, downloadText } from "@/lib/audio/e
 import { interpretLocal } from "@/lib/ai/interpretLocal";
 import { getActiveSessionStore, getActiveConnectorId } from "@/lib/connectors";
 import SpectrumCanvas from "./SpectrumCanvas";
+import MessageComposer from "./MessageComposer";
 import type { FrequencyObservation, AnalysisMode, AIInterpretationResult } from "@/types/zioncore";
 
 type DenseObs = Partial<FrequencyObservation> & Record<string, unknown>;
@@ -28,15 +29,18 @@ export default function FrequencyLab() {
   const [error, setError] = useState<string | null>(null);
   const [isTransmitting, setIsTransmitting] = useState(false);
   const [statusLog, setStatusLog] = useState<string[]>([
-    "ZionCore online · science + Mudzimu Unoyera layers ready. MWARI NDI MWARI.",
+    "ZionCore online · custom message encode + external devices ready. MWARI NDI MWARI.",
   ]);
   const [freqData, setFreqData] = useState<Float32Array | null>(null);
   const [connectorId, setConnectorId] = useState("local");
+  const [deviceId, setDeviceId] = useState<string | undefined>(undefined);
 
   const engineRef = useRef<FrequencyEngine | null>(null);
   const transmitterRef = useRef<FrequencyTransmitter | null>(null);
   const modeRef = useRef(mode);
+  const deviceIdRef = useRef(deviceId);
   modeRef.current = mode;
+  deviceIdRef.current = deviceId;
 
   useEffect(() => {
     engineRef.current = new FrequencyEngine(fftSize);
@@ -48,7 +52,6 @@ export default function FrequencyLab() {
     };
   }, []);
 
-  // When spiritual modes engage, surface faith layer immediately (science still needs measure)
   useEffect(() => {
     if (SPIRITUAL_MODES.includes(mode)) {
       setAiResult(interpretLocal(observation, mode));
@@ -60,28 +63,34 @@ export default function FrequencyLab() {
     setStatusLog((prev) => [`[${new Date().toLocaleTimeString()}] ${msg}`, ...prev].slice(0, 16));
   };
 
+  const onObs = useCallback((obs: Partial<FrequencyObservation> & Record<string, unknown>) => {
+    const merged = { ...obs, analysisMode: modeRef.current };
+    setObservation(merged);
+    const data = engineRef.current?.getFrequencyData();
+    if (data) setFreqData(new Float32Array(data));
+  }, []);
+
   const startListening = useCallback(async () => {
     setError(null);
     try {
       if (!engineRef.current) engineRef.current = new FrequencyEngine(fftSize);
-      await engineRef.current.start((obs) => {
-        const merged = { ...obs, analysisMode: modeRef.current };
-        setObservation(merged);
-        const data = engineRef.current?.getFrequencyData();
-        if (data) setFreqData(new Float32Array(data));
-      });
+      await engineRef.current.start(onObs, { deviceId: deviceIdRef.current });
       setIsListening(true);
-      addLog("Microphone live · dense FFT (SNR · centroid · harmonics)");
+      addLog(
+        deviceIdRef.current
+          ? `External / selected device live · FFT densify`
+          : "Default microphone live · dense FFT"
+      );
     } catch (err: any) {
       setError(err.message || "Microphone permission denied.");
       addLog("ERROR: " + (err.message || "mic failed"));
     }
-  }, [fftSize]);
+  }, [fftSize, onObs]);
 
   const stopListening = useCallback(() => {
     engineRef.current?.stop();
     setIsListening(false);
-    addLog("Microphone released");
+    addLog("Input released");
   }, []);
 
   const changeFftSize = (size: number) => {
@@ -95,8 +104,7 @@ export default function FrequencyLab() {
     setError(null);
     addLog("Full interpretation (science → faith layers)…");
     await new Promise((r) => setTimeout(r, 400));
-    const result = interpretLocal(observation, mode);
-    setAiResult(result);
+    setAiResult(interpretLocal(observation, mode));
     setAiLoading(false);
     addLog("Interpretation complete · MWARI NDI MWARI");
   };
@@ -137,14 +145,43 @@ export default function FrequencyLab() {
     }
   };
 
+  const transmitCustom = async (
+    message: string,
+    opts: { freq0: number; freq1: number; bitDurationMs: number }
+  ) => {
+    await runTx(
+      () =>
+        transmitterRef.current!.transmitBFSK(message, {
+          freq0: opts.freq0,
+          freq1: opts.freq1,
+          bitDurationMs: opts.bitDurationMs,
+        }),
+      `BFSK custom (${message.slice(0, 24)}${message.length > 24 ? "…" : ""})`
+    );
+  };
+
+  const analyseFile = async (file: Blob) => {
+    try {
+      if (isListening) stopListening();
+      if (!engineRef.current) engineRef.current = new FrequencyEngine(fftSize);
+      addLog("Analysing uploaded / recorded audio…");
+      await engineRef.current.analyseFile(file, onObs);
+      addLog("File spectrum analysed — use Interpret");
+      setIsListening(false);
+    } catch (e: any) {
+      setError(e.message || "Could not decode audio file");
+      addLog("File error: " + e.message);
+    }
+  };
+
   const transmitMessage = () =>
     runTx(() => transmitterRef.current!.transmitBFSK("MWARI NDI MWARI"), "BFSK MWARI NDI MWARI");
   const startPrayerBroadcast = () =>
     runTx(() => transmitterRef.current!.broadcastPrayerOrProtection("PROTECTION", 25), "Bloodline Protection 25s");
   const startSupremacyBroadcast = () =>
-    runTx(() => transmitterRef.current!.broadcastPrayerOrProtection("SUPREMACY", 20), "Supremacy & Alignment 20s");
+    runTx(() => transmitterRef.current!.broadcastPrayerOrProtection("SUPREMACY", 20), "Supremacy 20s");
   const startPrayerModulation = () =>
-    runTx(() => transmitterRef.current!.broadcastPrayerOrProtection("PRAYER", 30), "Prayer modulation 30s");
+    runTx(() => transmitterRef.current!.broadcastPrayerOrProtection("PRAYER", 30), "Prayer 30s");
   const startAlignment = () =>
     runTx(() => transmitterRef.current!.broadcastPrayerOrProtection("ALIGNMENT", 20), "Alignment 20s");
   const play440 = () =>
@@ -181,12 +218,12 @@ export default function FrequencyLab() {
               ZionCore Frequency Intelligence
             </h1>
             <p className="text-sm text-violet-400/80 mt-1">
-              Science first · Mudzimu Unoyera · Masawi bloodline · Authority of The Anointed Commander
+              Custom messages · external devices · science + Mudzimu Unoyera
             </p>
           </div>
           <div className="text-right space-y-1">
             <p className="text-amber-200/90 font-semibold tracking-widest text-sm">MWARI NDI MWARI</p>
-            <p className="text-xs text-violet-500">77-99-33 · 777-999-333 · store: {connectorId}</p>
+            <p className="text-xs text-violet-500">77-99-33 · store: {connectorId}</p>
             <Link href="/pricing" className="text-xs text-violet-400 underline">
               Pricing
             </Link>
@@ -196,8 +233,7 @@ export default function FrequencyLab() {
 
       {spiritualActive && (
         <div className="bg-gradient-to-r from-amber-950/80 to-violet-950/80 border-b border-amber-800/40 px-6 py-2 text-center text-sm text-amber-100">
-          Faith layer active: <strong>{mode.replace(/_/g, " ")}</strong> — instrument data stays honest; spiritual
-          meaning is by intention under the Throne.
+          Faith layer active: <strong>{mode.replace(/_/g, " ")}</strong>
         </div>
       )}
 
@@ -244,14 +280,14 @@ export default function FrequencyLab() {
                 disabled={aiLoading}
                 className="px-4 py-2 rounded-xl border border-amber-600/60 text-amber-200 text-sm disabled:opacity-40"
               >
-                {aiLoading ? "…" : "Interpret (Science + Spirit)"}
+                {aiLoading ? "…" : "Interpret"}
               </button>
               <button
                 onClick={saveSession}
                 disabled={!observation}
                 className="px-3 py-2 rounded-xl border border-violet-700/50 text-sm disabled:opacity-40"
               >
-                Save Session
+                Save
               </button>
               <button
                 onClick={exportJSON}
@@ -272,19 +308,20 @@ export default function FrequencyLab() {
                 disabled={isTransmitting}
                 className="px-3 py-2 rounded-xl border border-emerald-700/50 text-emerald-300 text-sm disabled:opacity-40"
               >
-                440 Hz Ref
+                440 Hz
               </button>
             </div>
             {error && <p className="mt-3 text-rose-400 text-sm">{error}</p>}
             {isListening && (
               <div className="mt-3 flex items-center gap-2 text-emerald-400 text-sm">
-                <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" /> Live dense analysis
+                <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" /> Live
+                {typeof o?.sourceDeviceType === "string" ? ` · ${o.sourceDeviceType}` : ""}
               </div>
             )}
           </section>
 
           <section className="rounded-2xl border border-violet-800/40 bg-[#0d0b18]/80 p-4">
-            <SpectrumCanvas frequencyData={isListening ? freqData : null} width={900} height={260} />
+            <SpectrumCanvas frequencyData={freqData} width={900} height={260} />
           </section>
 
           <section className="rounded-2xl border border-violet-800/40 bg-[#0d0b18]/80 p-5 grid grid-cols-2 md:grid-cols-4 gap-3">
@@ -303,9 +340,20 @@ export default function FrequencyLab() {
         </div>
 
         <div className="space-y-5">
+          <MessageComposer
+            onTransmit={transmitCustom}
+            onAnalyseFile={analyseFile}
+            onDeviceChange={(id) => {
+              setDeviceId(id);
+              addLog(id ? `Input device selected` : "Default mic");
+            }}
+            isTransmitting={isTransmitting}
+            isListening={isListening}
+            liveDominantHz={typeof o?.dominantFrequencyHz === "number" ? o.dominantFrequencyHz : undefined}
+          />
+
           <section className="rounded-2xl border border-amber-800/40 bg-gradient-to-b from-[#1a1208] to-[#0d0b18] p-5">
-            <h2 className="text-lg font-semibold text-amber-200 mb-2">Encode & Transmit</h2>
-            <p className="text-xs text-amber-200/50 mb-3">Physical tones · meaning by faith and intention</p>
+            <h2 className="text-lg font-semibold text-amber-200 mb-2">Preset broadcasts</h2>
             <div className="flex flex-col gap-2">
               <button
                 onClick={transmitMessage}
@@ -317,63 +365,57 @@ export default function FrequencyLab() {
               <button
                 onClick={startPrayerBroadcast}
                 disabled={isTransmitting}
-                className="w-full py-2.5 rounded-xl bg-gradient-to-r from-amber-700 to-violet-800 text-sm font-medium disabled:opacity-50"
+                className="w-full py-2.5 rounded-xl bg-gradient-to-r from-amber-700 to-violet-800 text-sm disabled:opacity-50"
               >
                 Bloodline Protection (25s)
               </button>
               <button
                 onClick={startSupremacyBroadcast}
                 disabled={isTransmitting}
-                className="w-full py-2.5 rounded-xl bg-gradient-to-r from-violet-800 to-amber-800 text-sm font-medium disabled:opacity-50"
+                className="w-full py-2.5 rounded-xl bg-gradient-to-r from-violet-800 to-amber-800 text-sm disabled:opacity-50"
               >
-                Supremacy & Alignment (20s)
+                Supremacy (20s)
               </button>
               <button
                 onClick={startPrayerModulation}
                 disabled={isTransmitting}
-                className="w-full py-2.5 rounded-xl border border-amber-700/50 text-amber-100 text-sm disabled:opacity-50"
+                className="w-full py-2.5 rounded-xl border border-amber-700/50 text-sm disabled:opacity-50"
               >
-                Prayer Modulation (30s)
+                Prayer (30s)
               </button>
               <button
                 onClick={startAlignment}
                 disabled={isTransmitting}
-                className="w-full py-2.5 rounded-xl border border-violet-600/50 text-violet-100 text-sm disabled:opacity-50"
+                className="w-full py-2.5 rounded-xl border border-violet-600/50 text-sm disabled:opacity-50"
               >
-                Alignment Stack (20s)
+                Alignment (20s)
               </button>
             </div>
             {isTransmitting && <p className="mt-3 text-amber-300 text-xs">Transmitting…</p>}
           </section>
 
-          <section className="rounded-2xl border border-violet-800/40 bg-[#0d0b18]/80 p-5 max-h-[560px] overflow-y-auto">
-            <h2 className="text-lg font-semibold text-violet-200 mb-3">ZionCore Interpretation</h2>
-            {!aiResult && (
-              <p className="text-sm text-violet-400/70">
-                Press Interpret, or select Spiritual / Celestial / Bloodline mode to open the faith layer. Science
-                always listed first when data exists.
-              </p>
-            )}
+          <section className="rounded-2xl border border-violet-800/40 bg-[#0d0b18]/80 p-5 max-h-[480px] overflow-y-auto">
+            <h2 className="text-lg font-semibold text-violet-200 mb-3">Interpretation</h2>
+            {!aiResult && <p className="text-sm text-violet-400/70">Interpret after capture or spiritual mode.</p>}
             {aiResult && (
               <div className="space-y-3 text-sm">
-                <Block title="MEASURED OBSERVATIONS" body={aiResult.measuredObservations} />
-                <Block title="SCIENTIFIC INTERPRETATION" body={aiResult.scientificInterpretation} />
-                <Block title="CONFIDENCE AND LIMITATIONS" body={aiResult.confidenceAndLimitations} />
-                <Block title="EXPLANATIONS" body={aiResult.explanations} />
-                <Block title="VERIFICATION TESTS" body={aiResult.verificationTests} />
-                <Block title="SPIRITUAL REFLECTION · MUDZIMU UNOYERA" body={aiResult.spiritualReflection} accent />
+                <Block title="MEASURED" body={aiResult.measuredObservations} />
+                <Block title="SCIENTIFIC" body={aiResult.scientificInterpretation} />
+                <Block title="CONFIDENCE" body={aiResult.confidenceAndLimitations} />
+                <Block title="VERIFY" body={aiResult.verificationTests} />
+                <Block title="SPIRITUAL · MUDZIMU UNOYERA" body={aiResult.spiritualReflection} accent />
                 {aiResult.celestialOrDimensionalNotes && (
-                  <Block title="CELESTIAL / DIMENSIONAL NOTES" body={aiResult.celestialOrDimensionalNotes} accent />
+                  <Block title="CELESTIAL" body={aiResult.celestialOrDimensionalNotes} accent />
                 )}
                 {aiResult.bloodlineProtectionGuidance && (
-                  <Block title="BLOODLINE PROTECTION GUIDANCE" body={aiResult.bloodlineProtectionGuidance} accent />
+                  <Block title="BLOODLINE" body={aiResult.bloodlineProtectionGuidance} accent />
                 )}
               </div>
             )}
           </section>
 
           <section className="rounded-2xl border border-violet-900/40 bg-[#08060f] p-4">
-            <h3 className="text-xs uppercase tracking-wider text-violet-500 mb-2">System Log</h3>
+            <h3 className="text-xs uppercase tracking-wider text-violet-500 mb-2">Log</h3>
             <div className="font-mono text-[11px] text-violet-300/80 space-y-1 max-h-36 overflow-y-auto">
               {statusLog.map((line, i) => (
                 <div key={i}>{line}</div>
@@ -384,8 +426,8 @@ export default function FrequencyLab() {
       </main>
 
       <footer className="border-t border-violet-900/30 mt-10 py-6 text-center text-xs text-violet-600">
-        <p>ZionCore · HRH Saint Tariro Masawi, The Anointed Commander · Mudzimu Unoyera</p>
-        <p className="mt-1 text-amber-700/80">MWARI NDI MWARI · Masawi bloodline protection architecture</p>
+        <p>ZionCore · HRH Saint Tariro Masawi · Mudzimu Unoyera</p>
+        <p className="mt-1 text-amber-700/80">MWARI NDI MWARI</p>
       </footer>
     </div>
   );
@@ -403,11 +445,7 @@ function Metric({ label, value }: { label: string; value: string }) {
 function Block({ title, body, accent }: { title: string; body: string; accent?: boolean }) {
   return (
     <div>
-      <div
-        className={`text-[10px] uppercase tracking-wider font-semibold mb-1 ${
-          accent ? "text-amber-400" : "text-violet-400"
-        }`}
-      >
+      <div className={`text-[10px] uppercase tracking-wider font-semibold mb-1 ${accent ? "text-amber-400" : "text-violet-400"}`}>
         {title}
       </div>
       <pre className="whitespace-pre-wrap text-violet-200/90 text-xs leading-relaxed bg-[#0a0814] p-2.5 rounded-lg border border-violet-900/30">
