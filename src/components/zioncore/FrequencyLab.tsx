@@ -3,6 +3,7 @@
 import { useState, useRef, useCallback, useEffect } from "react";
 import { FrequencyEngine } from "@/lib/audio/FrequencyEngine";
 import { FrequencyTransmitter } from "@/lib/audio/Transmitter";
+import { observationToJSON, observationToCSV, downloadText } from "@/lib/audio/exportObservation";
 import SpectrumCanvas from "./SpectrumCanvas";
 import type { FrequencyObservation, AnalysisMode, AIInterpretationResult } from "@/types/zioncore";
 
@@ -41,7 +42,7 @@ export default function FrequencyLab() {
     try {
       if (!engineRef.current) engineRef.current = new FrequencyEngine(fftSize);
       await engineRef.current.start((obs) => {
-        setObservation(obs);
+        setObservation({ ...obs, analysisMode: mode });
         if (engineRef.current) {
           const data = engineRef.current.getFrequencyData();
           if (data) setFreqData(new Float32Array(data));
@@ -53,7 +54,7 @@ export default function FrequencyLab() {
       setError(err.message || "Microphone permission denied or unavailable.");
       addLog("ERROR: " + (err.message || "Microphone access failed"));
     }
-  }, [fftSize]);
+  }, [fftSize, mode]);
 
   const stopListening = useCallback(() => {
     engineRef.current?.stop();
@@ -134,6 +135,20 @@ export default function FrequencyLab() {
     }
   };
 
+  const startSupremacyBroadcast = async () => {
+    if (!transmitterRef.current) return;
+    setIsTransmitting(true);
+    addLog("Initiating supremacy & alignment tonal broadcast…");
+    try {
+      await transmitterRef.current.broadcastPrayerOrProtection("SUPREMACY", 20);
+      addLog("Supremacy broadcast finished.");
+    } catch (e: any) {
+      addLog("Transmit error: " + e.message);
+    } finally {
+      setIsTransmitting(false);
+    }
+  };
+
   const transmitMessage = async () => {
     if (!transmitterRef.current) return;
     setIsTransmitting(true);
@@ -146,6 +161,26 @@ export default function FrequencyLab() {
     } finally {
       setTimeout(() => setIsTransmitting(false), 4000);
     }
+  };
+
+  const exportJSON = () => {
+    if (!observation) return;
+    downloadText(
+      `zioncore-observation-${Date.now()}.json`,
+      observationToJSON({ ...observation, analysisMode: mode }),
+      "application/json"
+    );
+    addLog("Exported observation as JSON.");
+  };
+
+  const exportCSV = () => {
+    if (!observation) return;
+    downloadText(
+      `zioncore-observation-${Date.now()}.csv`,
+      observationToCSV({ ...observation, analysisMode: mode }),
+      "text/csv"
+    );
+    addLog("Exported observation as CSV.");
   };
 
   return (
@@ -218,6 +253,21 @@ export default function FrequencyLab() {
               >
                 {aiLoading ? "Interpreting…" : "Interpret with ZionCore AI"}
               </button>
+
+              <button
+                onClick={exportJSON}
+                disabled={!observation}
+                className="px-3 py-2 rounded-xl border border-violet-700/50 text-violet-300 hover:bg-violet-900/30 disabled:opacity-40 text-sm"
+              >
+                Export JSON
+              </button>
+              <button
+                onClick={exportCSV}
+                disabled={!observation}
+                className="px-3 py-2 rounded-xl border border-violet-700/50 text-violet-300 hover:bg-violet-900/30 disabled:opacity-40 text-sm"
+              >
+                Export CSV
+              </button>
             </div>
 
             {error && (
@@ -268,6 +318,13 @@ export default function FrequencyLab() {
                 className="w-full py-2.5 rounded-xl bg-gradient-to-r from-amber-700 to-violet-800 hover:from-amber-600 hover:to-violet-700 text-sm font-medium disabled:opacity-50"
               >
                 Bloodline Protection Broadcast (25s)
+              </button>
+              <button
+                onClick={startSupremacyBroadcast}
+                disabled={isTransmitting}
+                className="w-full py-2.5 rounded-xl bg-gradient-to-r from-violet-800 to-amber-800 hover:from-violet-700 hover:to-amber-700 text-sm font-medium disabled:opacity-50"
+              >
+                Supremacy & Alignment Broadcast (20s)
               </button>
             </div>
             {isTransmitting && (
