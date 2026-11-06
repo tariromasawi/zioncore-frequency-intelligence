@@ -1,6 +1,7 @@
 /**
- * ZionCore Frequency Engine — dense RECEIVE · DECODE
- * Authority: HRH Saint Tariro Masawi | MWARI NDI MWARI | 77-99-33
+ * ZionCore Frequency Engine — RECEIVE · DECODE
+ * Supports default mic, selected deviceId, and offline AudioBuffer analysis
+ * Authority: HRH Saint Tariro Masawi | MWARI NDI MWARI
  */
 
 import type { SpectralPeak, FrequencyObservation } from "@/types/zioncore";
@@ -9,11 +10,13 @@ export class FrequencyEngine {
   private audioContext: AudioContext | null = null;
   private analyser: AnalyserNode | null = null;
   private mediaStream: MediaStream | null = null;
-  private source: MediaStreamAudioSourceNode | null = null;
+  private source: MediaStreamAudioSourceNode | MediaElementAudioSourceNode | AudioBufferSourceNode | null =
+    null;
   private animationFrameId: number | null = null;
   private isRunning = false;
   private baselineRms = 0;
   private frameCount = 0;
+  private deviceLabel = "browser-microphone";
 
   public sampleRate = 0;
   public fftSize = 4096;
@@ -26,19 +29,42 @@ export class FrequencyEngine {
     this.fftSize = fftSize;
   }
 
+  static async listInputDevices(): Promise<MediaDeviceInfo[]> {
+    if (!navigator.mediaDevices?.enumerateDevices) return [];
+    // Permission often required for labels
+    try {
+      const tmp = await navigator.mediaDevices.getUserMedia({ audio: true });
+      tmp.getTracks().forEach((t) => t.stop());
+    } catch {
+      /* labels may be blank */
+    }
+    const all = await navigator.mediaDevices.enumerateDevices();
+    return all.filter((d) => d.kind === "audioinput");
+  }
+
   async start(
     onUpdate: (obs: Partial<FrequencyObservation> & Record<string, unknown>) => void,
-    constraints: MediaStreamConstraints = {
-      audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false },
-    }
+    options?: { deviceId?: string }
   ): Promise<void> {
     if (this.isRunning) return;
     this.onUpdate = onUpdate;
     this.frameCount = 0;
     this.baselineRms = 0;
 
+    const audioConstraint: MediaTrackConstraints = {
+      echoCancellation: false,
+      noiseSuppression: false,
+      autoGainControl: false,
+    };
+    if (options?.deviceId) {
+      audioConstraint.deviceId = { exact: options.deviceId };
+    }
+
     try {
-      this.mediaStream = await navigator.mediaDevices.getUserMedia(constraints);
+      this.mediaStream = await navigator.mediaDevices.getUserMedia({ audio: audioConstraint });
+      const track = this.mediaStream.getAudioTracks()[0];
+      this.deviceLabel = track?.label || options?.deviceId || "browser-microphone";
+
       this.audioContext = new (window.AudioContext || (window as any).webkitAudioContext)();
       this.sampleRate = this.audioContext.sampleRate;
 
@@ -63,6 +89,67 @@ export class FrequencyEngine {
     }
   }
 
+  /** Analyse a user-uploaded or recorded File / Blob once (offline FFT snapshot series) */
+  async analyseFile(
+    file: Blob,
+    onUpdate: (obs: Partial<FrequencyObservation> & Record<string, unknown>) => void
+  ): Promise<Partial<FrequencyObservation> & Record<string, unknown>> {
+    this.stop();
+    this.onUpdate = onUpdate;
+    const arrayBuf = await file.arrayBuffer();
+    this.audioContext = new (window.AudioContext || (window as any).webkitAudioContext)();
+    const buffer = await this.audioContext.decodeAudioData(arrayBuf.slice(0));
+    this.sampleRate = buffer.sampleRate;
+    this.deviceLabel = "uploaded-recording";
+
+    this.analyser = this.audioContext.createAnalyser();
+    this.analyser.fftSize = this.fftSize;
+    this.analyser.smoothingTimeConstant = 0.4;
+
+    const src = this.audioContext.createBufferSource();
+    src.buffer = buffer;
+    src.connect(this.analyser);
+    // mute path so file analysis does not blast speakers unless user wants playback
+    const silent = this.audioContext.createGain();
+    silent.gain.value = 0;
+    this.analyser.connect(silent);
+    silent.connect(this.audioContext.destination);
+
+    const n = this.analyser.frequencyBinCount;
+    this.frequencyData = new Float32Array(n);
+    this.timeDomainData = new Uint8Array(n);
+    this.source = src as any;
+    this.isRunning = true;
+    this.frameCount = 0;
+    this.baselineRms = 0;
+
+    src.start(0);
+    const durationMs = Math.min(buffer.duration * 1000, 120000);
+
+    return new Promise((resolve) => {
+      const started = performance.now();
+      const loop = () => {
+        if (!this.isRunning || !this.analyser || !this.frequencyData || !this.timeDomainData) return;
+        this.analyser.getFloatFrequencyData(this.frequencyData as any);
+        this.analyser.getByteTimeDomainData(this.timeDomainData as any);
+        const obs = this.computeObservation();
+        onUpdate(obs);
+        if (performance.now() - started < durationMs - 50) {
+          this.animationFrameId = requestAnimationFrame(loop);
+        } else {
+          this.isRunning = false;
+          try {
+            src.stop();
+          } catch {
+            /* */
+          }
+          resolve(obs);
+        }
+      };
+      this.animationFrameId = requestAnimationFrame(loop);
+    });
+  }
+
   stop(): void {
     this.isRunning = false;
     if (this.animationFrameId !== null) {
@@ -73,7 +160,11 @@ export class FrequencyEngine {
   }
 
   private cleanup(): void {
-    this.source?.disconnect();
+    try {
+      this.source?.disconnect();
+    } catch {
+      /* */
+    }
     this.source = null;
     this.mediaStream?.getTracks().forEach((t) => t.stop());
     this.mediaStream = null;
@@ -181,7 +272,7 @@ export class FrequencyEngine {
       rmsLevel: Math.round(rms * 100000) / 100000,
       signalQuality,
       anomalyIndicators,
-      sourceDeviceType: "browser-microphone",
+      sourceDeviceType: this.deviceLabel,
       updatedAt: new Date().toISOString(),
       spectralCentroidHz: Math.round(centroidHz * 10) / 10,
       crestFactor: Math.round(crest * 100) / 100,
