@@ -13,7 +13,7 @@
   "dependencies": {
     "@supabase/supabase-js": "^2.47.0",
     "stripe": "^17.4.0",
-    "next": "15.1.9",
+    "next": "15.5.28",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
     "recharts": "^2.13.0",
